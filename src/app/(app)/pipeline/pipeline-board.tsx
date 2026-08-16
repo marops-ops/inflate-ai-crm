@@ -19,32 +19,38 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { STAGES, type Stage } from "@/lib/pipeline";
 import { formatCurrency, initials } from "@/lib/format";
 import { LeadStageControl } from "../leads/[id]/lead-stage-control";
-import { changeLeadStage } from "../leads/actions";
-import { Building2 } from "lucide-react";
+import { changeLeadStage, rejectLead } from "../leads/actions";
+import { Building2, Ban } from "lucide-react";
+
+const REJECTED = "rejected";
 
 type PipelineLead = {
   id: string;
   title: string;
   stage: string;
+  status: string;
   value: string;
   owner: string | null;
   companyName: string | null;
 };
 
-function groupByStage(leads: PipelineLead[]) {
-  const groups: Record<string, PipelineLead[]> = {};
+function groupByColumn(leads: PipelineLead[]) {
+  const groups: Record<string, PipelineLead[]> = { [REJECTED]: [] };
   for (const stage of STAGES) groups[stage.value] = [];
-  for (const lead of leads) groups[lead.stage]?.push(lead);
+  for (const lead of leads) {
+    if (lead.status === "lost") groups[REJECTED].push(lead);
+    else groups[lead.stage]?.push(lead);
+  }
   return groups;
 }
 
 export function PipelineBoard({ leads }: { leads: PipelineLead[] }) {
-  const [columns, setColumns] = useState(() => groupByStage(leads));
+  const [columns, setColumns] = useState(() => groupByColumn(leads));
   const [activeLead, setActiveLead] = useState<PipelineLead | null>(null);
   const [, startTransition] = useTransition();
 
   useEffect(() => {
-    setColumns(groupByStage(leads));
+    setColumns(groupByColumn(leads));
   }, [leads]);
 
   const sensors = useSensors(
@@ -61,13 +67,13 @@ export function PipelineBoard({ leads }: { leads: PipelineLead[] }) {
     const { active, over } = event;
     if (!over) return;
     const leadId = String(active.id);
-    const newStage = String(over.id) as Stage;
+    const target = String(over.id);
 
     setColumns((prev) => {
       let moving: PipelineLead | undefined;
       const next: Record<string, PipelineLead[]> = {};
-      for (const [stage, items] of Object.entries(prev)) {
-        next[stage] = items.filter((l) => {
+      for (const [col, items] of Object.entries(prev)) {
+        next[col] = items.filter((l) => {
           if (l.id === leadId) {
             moving = l;
             return false;
@@ -75,30 +81,47 @@ export function PipelineBoard({ leads }: { leads: PipelineLead[] }) {
           return true;
         });
       }
-      if (!moving || moving.stage === newStage) return prev;
-      next[newStage] = [{ ...moving, stage: newStage }, ...(next[newStage] ?? [])];
+      if (!moving) return prev;
+      const updated =
+        target === REJECTED
+          ? { ...moving, status: "lost" }
+          : { ...moving, stage: target, status: target === "won" ? "won" : "active" };
+      next[target] = [updated, ...(next[target] ?? [])];
       return next;
     });
 
     const current = leads.find((l) => l.id === leadId);
-    if (current && current.stage !== newStage) {
-      startTransition(() => {
-        changeLeadStage(leadId, newStage);
-      });
-    }
+    if (!current) return;
+    const alreadyThere =
+      target === REJECTED ? current.status === "lost" : current.stage === target;
+    if (alreadyThere) return;
+
+    startTransition(() => {
+      if (target === REJECTED) {
+        rejectLead(leadId);
+      } else {
+        changeLeadStage(leadId, target as Stage);
+      }
+    });
   }
 
   return (
     <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-6">
         {STAGES.map((stage) => (
           <PipelineColumn
             key={stage.value}
-            stage={stage.value}
+            columnId={stage.value}
             label={stage.label}
             leads={columns[stage.value] ?? []}
           />
         ))}
+        <PipelineColumn
+          columnId={REJECTED}
+          label="Rejected"
+          leads={columns[REJECTED] ?? []}
+          muted
+        />
       </div>
       <DragOverlay>
         {activeLead ? <PipelineCardBody lead={activeLead} dragging /> : null}
@@ -108,21 +131,26 @@ export function PipelineBoard({ leads }: { leads: PipelineLead[] }) {
 }
 
 function PipelineColumn({
-  stage,
+  columnId,
   label,
   leads,
+  muted,
 }: {
-  stage: string;
+  columnId: string;
   label: string;
   leads: PipelineLead[];
+  muted?: boolean;
 }) {
-  const { setNodeRef, isOver } = useDroppable({ id: stage });
+  const { setNodeRef, isOver } = useDroppable({ id: columnId });
   const total = leads.reduce((sum, l) => sum + Number(l.value), 0);
 
   return (
     <div className="flex min-w-0 flex-col gap-3">
       <div className="flex items-center justify-between px-0.5">
-        <h2 className="text-sm font-semibold">{label}</h2>
+        <h2 className={`flex items-center gap-1.5 text-sm font-semibold ${muted ? "text-muted-foreground" : ""}`}>
+          {muted ? <Ban className="size-3.5" /> : null}
+          {label}
+        </h2>
         <Badge variant="outline" className="text-xs">
           {leads.length}
         </Badge>
@@ -131,13 +159,13 @@ function PipelineColumn({
       <div
         ref={setNodeRef}
         className={`flex min-h-24 flex-col gap-2.5 rounded-lg transition-colors ${
-          isOver ? "bg-secondary/50 ring-1 ring-ring/40" : ""
+          isOver ? (muted ? "bg-red-500/10 ring-1 ring-red-500/30" : "bg-secondary/50 ring-1 ring-ring/40") : ""
         }`}
       >
         {leads.length === 0 ? (
           <Card className="border-dashed">
             <CardContent className="py-6 text-center text-xs text-muted-foreground">
-              No leads
+              {muted ? "Drag a lead here to reject it" : "No leads"}
             </CardContent>
           </Card>
         ) : (
@@ -175,11 +203,13 @@ function PipelineCardBody({
   lead: PipelineLead;
   dragging?: boolean;
 }) {
+  const rejected = lead.status === "lost";
+
   return (
     <Card
       className={`gap-3 py-3 transition-shadow hover:shadow-md ${
         dragging ? "shadow-lg ring-1 ring-ring/50" : ""
-      }`}
+      } ${rejected ? "opacity-70" : ""}`}
     >
       <CardHeader className="px-3">
         <p className="text-sm font-medium">{lead.title}</p>
@@ -202,7 +232,7 @@ function PipelineCardBody({
               <AvatarFallback className="text-[10px]">{initials(lead.owner)}</AvatarFallback>
             </Avatar>
           ) : null}
-          <LeadStageControl leadId={lead.id} stage={lead.stage} />
+          {!rejected ? <LeadStageControl leadId={lead.id} stage={lead.stage} /> : null}
         </div>
       </CardContent>
     </Card>

@@ -101,15 +101,22 @@ export async function deleteLead(id: string) {
 
 export async function changeLeadStage(id: string, stage: Stage) {
   const db = getDb();
+  const won = stage === "won";
+
   await db
     .update(leads)
-    .set({ stage, status: "active", updatedAt: new Date() })
+    .set({
+      stage,
+      status: won ? "won" : "active",
+      closedAt: won ? new Date() : null,
+      updatedAt: new Date(),
+    })
     .where(eq(leads.id, id));
 
   await db.insert(leadActivities).values({
     leadId: id,
-    type: "stage_change",
-    body: `Moved to ${stageLabel(stage)}.`,
+    type: won ? "status_change" : "stage_change",
+    body: won ? "Moved to Won — marked as won." : `Moved to ${stageLabel(stage)}.`,
   });
 
   revalidateLead(id);
@@ -148,6 +155,22 @@ export async function markLeadLost(id: string, formData: FormData) {
     leadId: id,
     type: "status_change",
     body: reason ? `Marked as lost: ${reason}` : "Marked as lost.",
+  });
+
+  revalidateLead(id);
+}
+
+export async function rejectLead(id: string) {
+  const db = getDb();
+  await db
+    .update(leads)
+    .set({ status: "lost", closedAt: new Date(), updatedAt: new Date() })
+    .where(eq(leads.id, id));
+
+  await db.insert(leadActivities).values({
+    leadId: id,
+    type: "status_change",
+    body: "Rejected from pipeline.",
   });
 
   revalidateLead(id);
